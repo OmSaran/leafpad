@@ -18,6 +18,8 @@
  */
 
 #include <string.h>
+#include <pthread.h>  // CHANGES: added for multi-threading
+#include <sys/time.h> // CHANGES: added to measure performance
 
 #ifdef HAVE_CONFIG_H
 #	include "config.h"
@@ -41,9 +43,86 @@ static gchar *string_find    = NULL;
 static gchar *string_replace = NULL;
 static gboolean match_case, replace_all;//, replace_mode = FALSE;
 
+
+// CHANGES: Structure to store the positions where the search string appears
+typedef struct hlight{
+	GtkTextIter start;
+	GtkTextIter end;
+	struct hlight *next;
+} hlight;
+
+// CHANGES: Structure to pass arguments to threads
+typedef struct{
+	GtkTextBuffer *buf;
+	GtkTextIter start;
+	GtkTextIter limit;
+	gchar *str;
+	gboolean *retval;
+	GtkSourceSearchFlags search_flags;
+	hlight *words;
+} thread_data;
+
+
+// CHANGES: (Added function) The task of each thread. 
+static void * par_search(void* dat)
+{
+	thread_data *d = (thread_data *) dat;
+	GtkTextIter iter, start, end, limit;
+	gtk_text_buffer_get_bounds(d->buf, &start, &end);
+	start = d->start;
+	limit = d->limit;
+	gboolean res;	
+
+	iter = start;
+
+	d->words = NULL;
+	hlight *nodeiter = NULL;
+	/*CHANGES: This loop searches (gtk_source_iter_forward_search) for the string. If found,
+		adds to the linked list containing information about the positions of the occurences.
+	*/ 
+	do {
+		
+		res = gtk_source_iter_forward_search(
+			&iter, d->str, d->search_flags, &start, &end, &limit); 
+		
+		if (res) {
+			// *d->retval = TRUE;
+			if(d->words == NULL)
+			{
+				d->words = malloc(sizeof(hlight));
+				d->words->start = start;
+				d->words->end = end;
+				d->words->next = NULL;
+				nodeiter = d->words;
+			}
+			else
+			{
+				hlight *node = malloc(sizeof(hlight));
+				node->start = start;
+				node->end = end;
+				node->next = NULL;
+				nodeiter->next = node;
+				nodeiter = node;
+			}
+			iter = end;
+		}
+	} while (res);
+}
+
+// CHANGES: Number of characters that each thread has to deal with.
+#define CHAR_PER_THREAD 100000
+
+
+/* CHANGES: This is the original function that was edited.
+	Instead of updating the table (gtk_text_buffer_apply_tag_by_name) immediately after
+	the search (gtk_source_iter_forward_search), the search is done in parallel,
+	the positions (required to update table) of match are stored in a linked list (hlight)
+	by each thread. Finally when all threads are done searching (pthread_join),
+	the table is then updated serially using the linked list from each thread.
+*/ 
 static gboolean hlight_searched_strings(GtkTextBuffer *buffer, gchar *str)
 {
-	GtkTextIter iter, start, end;
+	GtkTextIter iter, start, end, limit;
 	gboolean res, retval = FALSE;
 	GtkSourceSearchFlags search_flags =
 		GTK_SOURCE_SEARCH_VISIBLE_ONLY | GTK_SOURCE_SEARCH_TEXT_ONLY;
@@ -60,21 +139,121 @@ static gboolean hlight_searched_strings(GtkTextBuffer *buffer, gchar *str)
 	gtk_text_buffer_remove_tag_by_name(buffer,
 		"replaced", &start, &end);	*/
 	gtk_text_buffer_remove_all_tags(buffer, &start, &end);
-	iter = start;
+
+	// CHANGES: Calculating number of characters in buffer - used for splitting work.
+	gint noOfCharac = gtk_text_buffer_get_char_count(buffer);
+	int noThreads = noOfCharac/CHAR_PER_THREAD;
+
+	printf("No of Threads = %d\n", noThreads);
+	printf("No Of Characters = %d\n", noOfCharac);
+
+	// CHANGES: Used for measuring performance
+	struct timeval  tv1, tv2;
+	gettimeofday(&tv1, NULL);
+
+	// CHANGES: For maintaing the threads.
+	pthread_t *tid = malloc(noThreads * sizeof(pthread_t));
+
+	/* CHANGES: Used to send parameters to the threads.
+		Also used after joining the threads for procuring the linked lists.
+	*/
+	thread_data *data = calloc(noThreads, sizeof(thread_data));
+
+	int i, j;
+
+	// CHANGES: Setting the appropriate parameters and creating threads.
+	for(i=0, j=0; j<noThreads; i=i+CHAR_PER_THREAD, j++)
+	{
+		data[j].buf = buffer;
+		data[j].str = str;
+		data[j].search_flags = search_flags;
+		gtk_text_buffer_get_iter_at_offset(buffer, &(data[j].start), i);
+		gtk_text_buffer_get_iter_at_offset(buffer, &(data[j].limit), i + CHAR_PER_THREAD + 1);
+
+		pthread_create(&tid[j], NULL, par_search, (void *)&data[j]); 
+	}
+
+	// CHANGES: Linked list for the main thread
+	hlight *t1 = NULL;
+
+	/* CHANGES: The main thread does the search for the remaining 
+		characters not a multiple of CHAR_PER_THREAD.
+		Function sets the iterator to the position of the third argument.
+	*/
+	gtk_text_buffer_get_iter_at_offset(buffer, &iter, noThreads * CHAR_PER_THREAD);
+
+
+	// CHANGES: Search loop for the main thread (Searches only the residual characters)
+	hlight *nodeiter = NULL;
 	do {
 		res = gtk_source_iter_forward_search(
 			&iter, str, search_flags, &start, &end, NULL);
 		if (res) {
-			retval = TRUE;
-			gtk_text_buffer_apply_tag_by_name(buffer,
-				"searched", &start, &end);
+			if(t1 == NULL)
+			{
+				t1 = malloc(sizeof(hlight));
+				t1->start = start;
+				t1->end = end;
+				t1->next = NULL;
+				nodeiter = t1;
+			}
+			else
+			{
+				hlight *node = malloc(sizeof(hlight));
+				node->start = start;
+				node->end = end;
+				node->next = NULL;
+				nodeiter->next = node;
+				nodeiter = node;
+			}			
 //				replace_mode ? "replaced" : "searched", &start, &end);
 			iter = end;
 		}
 	} while (res);
+	printf("%s\n", "Done");
 /*	if (replace_mode)
 		replace_mode = FALSE;
 	else	*/
+
+	// CHANGES: Waiting for all threads to finish.
+	for(i=0; i<noThreads; i++)
+		pthread_join(tid[i], NULL);
+
+
+	/* CHANGES: Updation of table from linked lists of threads done in this loop
+		gtk_text_buffer_apply_tag_by_name updates the table
+	*/
+	hlight *p;
+	for(i=0; i<noThreads; i++)
+	{
+		p = data[i].words;
+		while(p != NULL)
+		{
+			gtk_text_buffer_apply_tag_by_name(buffer, "searched", &p->start, &p->end) ;
+			p = p->next;
+		}
+	}
+
+	// CHANGES: Updation of table for the main thread's linked list.
+	p = t1;
+	while(p != NULL)
+	{
+		gtk_text_buffer_apply_tag_by_name(buffer, "searched", &p->start, &p->end) ;
+		p = p->next;
+	}
+
+	clock_t endTime = clock();
+
+	double time = (double)(endTime - begin) / CLOCKS_PER_SEC;
+
+	gettimeofday(&tv2, NULL);
+
+	
+	//CHANGES: Total time taken for updating table + searching
+	printf ("Total time = %f seconds\n",
+         (double) (tv2.tv_usec - tv1.tv_usec) / 1000000 +
+         (double) (tv2.tv_sec - tv1.tv_sec));
+
 	hlight_toggle_searched(buffer);
 	
 	return retval;
