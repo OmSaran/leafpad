@@ -1,6 +1,16 @@
-Changes that I made are in src/search.c
+Changes that I made are: 
+src/searchFirstAttempt.c --First attempt
+src/search.c --Second Attempt
+
 Changes are documented in comments starting with CHANGES:
 
+Steps followed for testing:
+1. For the first time installation run ./configure in terminal
+2. In the generated Makefile add -lpthread to the CFlags
+3. Type make in terminal
+4. Type sudo make install -strip
+5. Run leafpad from terminal. Just type leafpad to open an instance - done to see console prints (execution time).
+6. To reinstall run ./reinstall.sh No need for first 4 steps.
 
 --- AUTHOR's CONTENT ---
 Leafpad - GTK+ based simple text editor
