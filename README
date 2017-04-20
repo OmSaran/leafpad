@@ -12,6 +12,10 @@ Steps followed for testing:
 5. Run leafpad from terminal. Just type leafpad to open an instance - done to see console prints (execution time).
 6. To reinstall run sudo ./reinstall.sh No need for first 4 steps.
 
+Future Work:
+1. Fix memory leaks.
+2. Reduce memory overheads by storing offset instead of end pointer.
+
 --- AUTHOR's CONTENT ---
 Leafpad - GTK+ based simple text editor
 
