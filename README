@@ -1,3 +1,8 @@
+Changes that I made are in src/search.c
+Changes are documented in comments starting with CHANGES:
+
+
+--- AUTHOR's CONTENT ---
 Leafpad - GTK+ based simple text editor
 
 
